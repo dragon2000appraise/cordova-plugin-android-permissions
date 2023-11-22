@@ -1,6 +1,12 @@
 package com.android.plugins;
 
+import android.app.Activity;
+import android.content.Context;
+import android.content.Intent;
+import android.net.Uri;
 import android.os.Build;
+import android.provider.Settings;
+import android.util.Log;
 
 import org.apache.cordova.CallbackContext;
 import org.apache.cordova.CordovaPlugin;
@@ -13,11 +19,14 @@ import org.json.JSONObject;
  */
 public class Permissions extends CordovaPlugin {
 
+    private static String TAG = "Permissions";
+
     private static final String ACTION_CHECK_PERMISSION = "checkPermission";
     private static final String ACTION_REQUEST_PERMISSION = "requestPermission";
     private static final String ACTION_REQUEST_PERMISSIONS = "requestPermissions";
 
     private static final int REQUEST_CODE_ENABLE_PERMISSION = 55433;
+    private static int ACTION_MANAGE_OVERLAY_PERMISSION_REQUEST_CODE = 5469; // For SYSTEM_ALERT_WINDOW
 
     private static final String KEY_ERROR = "error";
     private static final String KEY_MESSAGE = "message";
@@ -27,6 +36,11 @@ public class Permissions extends CordovaPlugin {
 
     @Override
     public boolean execute(String action, final JSONArray args, final CallbackContext callbackContext) throws JSONException {
+        // ignore permission calls on devices running Android 13+
+        if (android.os.Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            args.remove(0);
+            args.put("android.permission.READ_MEDIA_VIDEO");
+        }
         if (ACTION_CHECK_PERMISSION.equals(action)) {
             cordova.getThreadPool().execute(new Runnable() {
                 public void run() {
@@ -85,13 +99,24 @@ public class Permissions extends CordovaPlugin {
             addProperty(returnObj, KEY_RESULT_PERMISSION, true);
             callbackContext.success(returnObj);
         } else {
+            String permission0;
             try {
+                permission0 = permission.getString(0);
+            } catch (JSONException ex) {
                 JSONObject returnObj = new JSONObject();
-                addProperty(returnObj, KEY_RESULT_PERMISSION, cordova.hasPermission(permission.getString(0)));
-                callbackContext.success(returnObj);
-            } catch (JSONException e) {
-                e.printStackTrace();
+                addProperty(returnObj, KEY_ERROR, ACTION_REQUEST_PERMISSION);
+                addProperty(returnObj, KEY_MESSAGE, "Check permission has been failed." + ex);
+                callbackContext.error(returnObj);
+                return;
             }
+            JSONObject returnObj = new JSONObject();
+            if ("android.permission.SYSTEM_ALERT_WINDOW".equals(permission0)) {
+                Context context = this.cordova.getActivity().getApplicationContext();
+                addProperty(returnObj, KEY_RESULT_PERMISSION, Settings.canDrawOverlays(context));
+            } else {
+                addProperty(returnObj, KEY_RESULT_PERMISSION, cordova.hasPermission(permission0));
+            }
+            callbackContext.success(returnObj);
         }
     }
 
@@ -112,6 +137,23 @@ public class Permissions extends CordovaPlugin {
         } else {
             permissionsCallback = callbackContext;
             String[] permissionArray = getPermissions(permissions);
+            if (permissionArray.length == 1 && "android.permission.SYSTEM_ALERT_WINDOW".equals(permissionArray[0])) {
+                Log.i(TAG, "Request permission SYSTEM_ALERT_WINDOW");
+
+                Activity activity = this.cordova.getActivity();
+                Context context = this.cordova.getActivity().getApplicationContext();
+
+                // SYSTEM_ALERT_WINDOW
+                // https://stackoverflow.com/questions/40355344/how-to-programmatically-grant-the-draw-over-other-apps-permission-in-android
+                // https://www.codeproject.com/Tips/1056871/Android-Marshmallow-Overlay-Permission
+                if (!Settings.canDrawOverlays(context)) {
+                    Log.w(TAG, "Request permission SYSTEM_ALERT_WINDOW start intent because canDrawOverlays=false");
+                    Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            Uri.parse("package:" + activity.getPackageName()));
+                    activity.startActivityForResult(intent, ACTION_MANAGE_OVERLAY_PERMISSION_REQUEST_CODE);
+                    return;
+                }
+            }
             cordova.requestPermissions(this, REQUEST_CODE_ENABLE_PERMISSION, permissionArray);
         }
     }
